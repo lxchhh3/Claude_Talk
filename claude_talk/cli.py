@@ -22,7 +22,7 @@ from typing import TextIO
 from .kana import has_latin, transliterate
 from .notation import is_aquestalk_voice, to_notation
 from .server import ROOT, default_voice_from_env
-from .text import pick_voice
+from .text import match_voice, pick_voice, preset_name
 
 SAMPLE_JA = "オール テスツ パスト。チェック ザ ログ。"
 SAMPLE_EN = "All tests passed. Check the log."
@@ -37,43 +37,36 @@ _HEADER = (
 
 
 def resolve(selection: str, voices: list[str]) -> str:
-    """'7' -> the 7th voice; otherwise the first voice containing the text."""
+    """'7' -> the 7th voice; otherwise match_voice() (exact preset name first:
+    "AquesTalk10 F1" is also inside "...F1E"). An empty selection is the first voice."""
     s = selection.strip()
     if s.isdigit():
         i = int(s)
         if 1 <= i <= len(voices):
             return voices[i - 1]
         raise ValueError(f"no voice number {i} (1-{len(voices)})")
-    for v in voices:  # exact preset name first ("AquesTalk10 F1" is also inside "...F1E")
-        if preset_name(v).lower() == s.lower():
-            return v
-    for v in voices:
-        if s.lower() in v.lower():
-            return v
-    raise ValueError(f"no voice matches {s!r}")
-
-
-def preset_name(voice: str) -> str:
-    """The part before ' (': the preset for AquesTalk voices, a safe substring otherwise."""
-    return voice.split(" (")[0].strip()
+    hit = match_voice(voices, s) if s else next(iter(voices), None)
+    if hit is None:
+        raise ValueError(f"no voice matches {s!r}")
+    return hit
 
 
 def is_english(voice: str) -> bool:
     return "english" in voice.lower()
 
 
-def sample_for(voice: str) -> str:
+def _in_voice(voice: str, english: str, japanese: str) -> str:
+    """The voice's name, then the line: English for an English voice, katakana otherwise."""
     name = preset_name(voice)
-    if is_english(voice):
-        return f"{name}. {SAMPLE_EN}"
-    return f"{transliterate(name)}。{SAMPLE_JA}"
+    return f"{name}. {english}" if is_english(voice) else f"{transliterate(name)}。{japanese}"
+
+
+def sample_for(voice: str) -> str:
+    return _in_voice(voice, SAMPLE_EN, SAMPLE_JA)
 
 
 def confirmation_for(voice: str) -> str:
-    name = preset_name(voice)
-    if is_english(voice):
-        return f"{name}. {CONFIRM_EN}"
-    return f"{transliterate(name)}。{CONFIRM_JA}"
+    return _in_voice(voice, CONFIRM_EN, CONFIRM_JA)
 
 
 def spoken_for(text: str, voice: str, accent: bool = True) -> tuple[str, str]:
@@ -109,15 +102,43 @@ def _build_speaker():
     return Speaker(lambda: CompositeBackend.from_factories(factories), lock=WindowsMutexLock())
 
 
+# ------------------------------------------- shared by the one-shot commands and the picker
+def _current(voices: list[str], env: Mapping[str, str], root: str) -> str:
+    """What the default resolves to for Japanese text: the yukkuri route."""
+    return pick_voice("テスト", voices, preferred=default_voice_from_env(env, root))
+
+
+def _list(voices: list[str], current: str, out: TextIO, needle: str = "") -> None:
+    for i, v in enumerate(voices, 1):
+        if needle in v.lower():
+            print(f"{'*' if v == current else ' '}{i:2d}. {v}", file=out)
+
+
+def _play(speaker, voices: list[str], voice: str, out: TextIO) -> None:
+    print(f"{voices.index(voice) + 1:2d}. {voice}", file=out, flush=True)
+    speaker.speak(sample_for(voice), voice=voice, max_chars=300)
+    speaker.wait_idle(60)
+
+
+def _confirm(speaker, voice: str) -> None:
+    speaker.speak(confirmation_for(voice), voice=voice, max_chars=300)
+    speaker.wait_idle(60)
+
+
+def _say(speaker, text: str, voice: str, accent: bool, out: TextIO) -> None:
+    send, shown = spoken_for(text, voice, accent=accent)
+    print(f"{voice}: {shown}", file=out, flush=True)
+    speaker.speak(send, voice=voice, max_chars=800)
+    speaker.wait_idle(120)
+
+
 def _interactive(speaker, voices: list[str], root: str, env: Mapping[str, str], out: TextIO, inp) -> int:
     """Stay open until the user quits: that is what a double-clicked .cmd needs."""
 
     def relist() -> str:
-        default = default_voice_from_env(env, root)
-        current = pick_voice("テスト", voices, preferred=default)
+        current = _current(voices, env, root)
         print("Claude Talk voices (* = current default)", file=out)
-        for i, v in enumerate(voices, 1):
-            print(f"{'*' if v == current else ' '}{i:2d}. {v}", file=out)
+        _list(voices, current, out)
         print(
             "number/name = hear it | set N = make it the default | say TEXT = test a line"
             " | plain TEXT = same without English stress | l = list | q = quit",
@@ -143,20 +164,13 @@ def _interactive(speaker, voices: list[str], root: str, env: Mapping[str, str], 
                 v = resolve(line[4:], voices)
                 path = write_default(root, v)
                 print(f"default voice -> {preset_name(v)}  (written to {path}); restart Claude Code to hear it there", file=out, flush=True)
-                speaker.speak(confirmation_for(v), voice=v, max_chars=300)
-                speaker.wait_idle(60)
+                _confirm(speaker, v)
                 current = v
             elif line.startswith(("say ", "plain ")):
                 cmd, _, text = line.partition(" ")
-                send, shown = spoken_for(text.strip(), current, accent=cmd == "say")
-                print(f"{current}: {shown}", file=out, flush=True)
-                speaker.speak(send, voice=current, max_chars=800)
-                speaker.wait_idle(120)
+                _say(speaker, text.strip(), current, cmd == "say", out)
             else:
-                v = resolve(line, voices)
-                print(f"{voices.index(v) + 1:2d}. {v}", file=out, flush=True)
-                speaker.speak(sample_for(v), voice=v, max_chars=300)
-                speaker.wait_idle(60)
+                _play(speaker, voices, resolve(line, voices), out)
         except ValueError as exc:
             print(f"error: {exc}", file=out, flush=True)
 
@@ -196,25 +210,18 @@ def main(
     try:
         voices = speaker.voices()
         default = default_voice_from_env(env, root)
-        current = pick_voice("テスト", voices, preferred=default)  # Japanese text: the yukkuri route
+        current = _current(voices, env, root)
 
         if cmd == "interactive":
             return _interactive(speaker, voices, root, env, out, inp)
 
         if cmd == "list":
-            needle = getattr(args, "filter", "").lower()
-            for i, v in enumerate(voices, 1):
-                if needle in v.lower():
-                    mark = "*" if v == current else " "
-                    print(f"{mark}{i:2d}. {v}", file=out)
+            _list(voices, current, out, args.filter.lower())
             return 0
 
         if cmd == "play":
-            chosen = [resolve(s, voices) for s in args.selection] if args.selection else list(voices)
-            for v in chosen:
-                print(f"{voices.index(v) + 1:2d}. {v}", file=out, flush=True)
-                speaker.speak(sample_for(v), voice=v, max_chars=300)
-                speaker.wait_idle(60)
+            for v in [resolve(s, voices) for s in args.selection] if args.selection else voices:
+                _play(speaker, voices, v, out)
             return 0
 
         if cmd == "set":
@@ -225,23 +232,16 @@ def main(
                 print(f"note: CLAUDE_TALK_VOICE={env['CLAUDE_TALK_VOICE']!r} overrides voice.txt", file=out)
             print("Restart Claude Code sessions to hear it there.", file=out)
             if not args.quiet:
-                speaker.speak(confirmation_for(v), voice=v, max_chars=300)
-                speaker.wait_idle(60)
+                _confirm(speaker, v)
             return 0
 
         if cmd == "show":
             source = "CLAUDE_TALK_VOICE" if (env.get("CLAUDE_TALK_VOICE") or "").strip() else "voice.txt"
-            shown = default if default else "(none)"
-            print(f"default: {shown}  [{source}]\nresolves to: {current}", file=out)
+            print(f"default: {default if default else '(none)'}  [{source}]\nresolves to: {current}", file=out)
             return 0
 
         if cmd == "say":
-            text = " ".join(args.text)
-            v = resolve(args.voice, voices) if args.voice else current
-            send, shown = spoken_for(text, v, accent=not args.plain)
-            print(f"{v}: {shown}", file=out)
-            speaker.speak(send, voice=v, max_chars=800)
-            speaker.wait_idle(120)
+            _say(speaker, " ".join(args.text), resolve(args.voice, voices) if args.voice else current, not args.plain, out)
             return 0
         return 2
     except ValueError as exc:

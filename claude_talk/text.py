@@ -129,14 +129,19 @@ def truncate(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, bool]:
     return head, True
 
 
-def _match(available: list[str], needle: str) -> str | None:
-    """A voice whose name (the part before ' (') equals `needle` wins; otherwise
-    the first voice containing it. Case-insensitive."""
+def preset_name(voice: str) -> str:
+    """The part before ' (': the preset for AquesTalk voices, a safe substring otherwise."""
+    return voice.split(" (")[0].strip()
+
+
+def match_voice(available: list[str], needle: str) -> str | None:
+    """A voice whose preset_name() equals `needle` wins; otherwise the first
+    voice containing it. Case-insensitive."""
     needle = needle.lower().strip()
     if not needle:
         return None
     for name in available:
-        if name.split(" (")[0].strip().lower() == needle:
+        if preset_name(name).lower() == needle:
             return name
     for name in available:
         if needle in name.lower():
@@ -155,12 +160,12 @@ def pick_voice(
     if not available:
         raise ValueError("no TTS voices are installed")
     if preferred:
-        hit = _match(available, preferred)
+        hit = match_voice(available, preferred)
         if hit:
             return hit
     lang = detect_language(text)
     for candidate in defaults.get(lang, defaults["en"]):
-        hit = _match(available, candidate)
+        hit = match_voice(available, candidate)
         if hit:
             return hit
     return available[0]
