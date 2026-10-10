@@ -88,7 +88,7 @@ claude_talk/audio.py     numpy-free WAV helpers + winsound player
 claude_talk/jtalk.py     optional Open JTalk (Mei) backend
 claude_talk/server.py    FastMCP tools, project label, main()
 claude_talk/cli.py       the `voice` command (list / play / set / show / say)
-voice.py, voice.cmd      launchers for it; voice.txt holds the chosen default
+voice.cmd                launcher for it (python -m claude_talk.cli); voice.txt holds the chosen default
 scripts/smoke_client.py  spawns the server over stdio and makes it talk
 scripts/build_loanwords.py  rebuilds data/loanwords.tsv from JMdict_e.gz
 tests/                   unit tests (fake engines) + opt-in audio tests
