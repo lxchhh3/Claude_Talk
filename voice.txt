@@ -1,0 +1,4 @@
+# Default voice for Claude Talk (written by `voice set`). Lines starting with #
+# are ignored; the first other line is matched as a substring of a voice name.
+# Run `voice list` / `voice play` to choose; restart Claude Code after changing.
+AquesTalk10 F1

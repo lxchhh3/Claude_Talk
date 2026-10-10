@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# AQUEST's AquesTalkPlayer: its licence forbids redistributing the package or any part of it
+aquestalkplayer_*/
+aquestalkplayer_*.zip
