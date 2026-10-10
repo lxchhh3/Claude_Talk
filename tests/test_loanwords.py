@@ -1,10 +1,13 @@
 """Real Japanese loanword spellings for English words, mined from JMdict."""
+import importlib.util
 import io
+import os
 
 import pytest
 
+from claude_talk import kana as kana_mod
 from claude_talk import loanwords
-from claude_talk.kana import romaji_to_kana
+from claude_talk.kana import romaji_to_kana, word_reading
 from claude_talk.loanwords import build_table, iter_entries, load_table, skeleton, write_table
 
 # a JMdict-shaped fixture, entities and all (the real file defines ~300 of them)
@@ -169,6 +172,44 @@ def test_build_table_prefers_common_then_closest_reading():
     table = build_table(entries, rules)
     assert table["computer"] == "コンピューター"  # closer to the rule reading
     assert table["server"] == "サーバー"  # common (re_pri) wins
+
+
+# ------------------------------------------- pruning (scripts/build_loanwords.py)
+def _build_script():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "build_loanwords.py")
+    spec = importlib.util.spec_from_file_location("build_loanwords", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PRUNE_TABLE = {
+    "aardvark": "アードバーク",  # the rules read it the same: dropped
+    "claude": "クロード",  # OVERRIDES has it, so the row is never read: dropped
+    "sentence": "センテンス",  # the rules say センタンス: kept
+    "abacus": "アバカス",  # the rules agree, but "abacus's" reads through the row: kept
+}
+
+
+def test_word_forms_cover_every_word_that_reads_through_a_row():
+    forms = set(_build_script().word_forms({"sentence": "センテンス", "abc": "エービーシー"}))
+    assert {"sentence", "sentences", "sentence's", "abc", "abc's", "ABC", "ABC'S"} <= forms
+
+
+def test_prune_keeps_only_the_rows_a_reading_needs():
+    build = _build_script()
+    kept = build.prune(PRUNE_TABLE, build.word_forms(PRUNE_TABLE))
+    assert kept == {"sentence": "センテンス", "abacus": "アバカス"}
+
+
+def test_prune_leaves_every_reading_unchanged(monkeypatch):
+    build = _build_script()
+    forms = build.word_forms(PRUNE_TABLE)
+    monkeypatch.setattr(kana_mod, "_loanwords", lambda: PRUNE_TABLE)
+    before = {w: word_reading(w) for w in forms}
+    kept = build.prune(PRUNE_TABLE, forms)
+    monkeypatch.setattr(kana_mod, "_loanwords", lambda: kept)
+    assert {w: word_reading(w) for w in forms} == before
 
 
 # ---------------------------------------------------------- file round trip

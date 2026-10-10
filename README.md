@@ -24,8 +24,8 @@ terminal is buried or you are on your phone.
   to katakana before speaking ("All tests passed" → オール テスツ パスト). Per
   word: a small override table for project jargon (`claude_talk/kana.py`), then
   the standard loanword spelling from JMdict (センテンス, レビュー, コンピューター;
-  ~10,500 words in `claude_talk/data/loanwords.tsv`, plus their -s/-ed/-ing
-  forms), then the CMU pronouncing dictionary with ARPAbet→kana rules, letter
+  ~8,000 words in `claude_talk/data/loanwords.tsv`, plus their -s/-ed/-ing
+  forms; words the rules already read the same way are left out of the file), then the CMU pronouncing dictionary with ARPAbet→kana rules, letter
   names for acronyms, and a romaji-style reading for unknown words. The rules
   take unstressed endings from the spelling the way loanwords do (-ted →
   テッド, -et → ェット, -age → ェージ, -tion → ション, -en → ズン/クン/デン,
