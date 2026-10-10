@@ -36,10 +36,7 @@ async def main(text: str) -> int:
             t0 = time.perf_counter()
             res = await session.call_tool("speak", {"text": text})
             print("speak ->", res.content[0].text, "(isError=%s)" % res.isError)
-            # the tool returns as soon as the message is queued; wait for the
-            # utterance by asking for another one with interrupt=False and
-            # polling stop_speaking's purge count is overkill - just sleep by
-            # length: ~15 chars/sec is a slow upper bound for these voices.
+            # speak returns once queued; wait out the utterance (~12 chars/s is a slow upper bound)
             await asyncio.sleep(min(30, 1 + len(text) / 12))
             print("elapsed %.1fs" % (time.perf_counter() - t0))
             return 1 if res.isError else 0
