@@ -46,12 +46,6 @@ def quiet_import(name: str) -> ModuleType | None:
             return None
 
 
-def preload_runtime(mei: bool) -> None:
-    """Load noisy native runtimes before the stdio transport owns stdout."""
-    if mei:
-        quiet_import("pyopenjtalk")
-
-
 def project_label_from_env(env: Mapping[str, str], cwd: str) -> str | None:
     """What to say before each message so the user knows which terminal is
     talking. CLAUDE_TALK_PROJECT overrides; 'off' disables; default is the
@@ -204,7 +198,8 @@ def main() -> None:
     label_voice = os.environ.get("CLAUDE_TALK_LABEL_VOICE") or None
     default_voice = default_voice_from_env(os.environ, ROOT)
     mei_on = os.environ.get("CLAUDE_TALK_MEI", "0") == "1"
-    preload_runtime(mei=mei_on)
+    if mei_on:  # load the noisy native runtime before the stdio transport owns stdout
+        quiet_import("pyopenjtalk")
 
     from .aquestalk import AquesTalkPlayerBackend, find_aquestalk_exe
     from .speaker import CompositeBackend, SapiBackend, WindowsMutexLock

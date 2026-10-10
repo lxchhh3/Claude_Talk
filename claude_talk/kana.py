@@ -399,15 +399,8 @@ def romaji_to_kana(word: str) -> str:
             out.append(ROWS[cons][1])
             i = j + 1
             continue
-        # consonant with no vowel
-        if cons in ("N", "M"):
-            out.append("ン")
-        elif cons == "R" or cons == "L":
-            out.append("ル")
-        elif cons in ("T", "D"):
-            out.append(CODA[cons])
-        else:
-            out.append(CODA.get(cons, ""))
+        # consonant with no vowel: the coda reading, except a written r is ル
+        out.append("ル" if cons == "R" else CODA.get(cons, ""))
         i = j
     return "".join(out)
 

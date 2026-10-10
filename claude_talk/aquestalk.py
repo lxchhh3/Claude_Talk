@@ -48,21 +48,14 @@ def load_presets(exe: str) -> dict[str, tuple[str, str]]:
     except (OSError, UnicodeDecodeError) as exc:
         log.warning("could not read %s: %s", path, exc)
         return {}
-    presets: dict[str, tuple[str, str]] = {}
-    for row in rows[1:]:
-        if len(row) >= 4 and row[0]:
-            presets[row[0]] = (row[2], row[3])
-    return presets
+    return {row[0]: (row[2], row[3]) for row in rows[1:] if len(row) >= 4 and row[0]}
 
 
 def voices_for(presets: dict[str, tuple[str, str]]) -> dict[str, str]:
     """Voice name -> preset name, Reimu and Marisa first (the "Yukkuri" default
     must land on Reimu), then every other preset in file order."""
-    out = {REIMU_VOICE: "れいむ", MARISA_VOICE: "まりさ"}
-    for name, (engine, vtype) in presets.items():
-        if name in DEFAULT_PRESETS:
-            continue
-        out[f"{name} (AquesTalkPlayer {engine} {vtype})"] = name
+    out = {voice_name(p, label): p for p, label in DEFAULT_PRESETS.items()}
+    out.update({f"{name} (AquesTalkPlayer {e} {t})": name for name, (e, t) in presets.items() if name not in DEFAULT_PRESETS})
     return out
 
 # argv -> return code

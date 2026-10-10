@@ -90,14 +90,11 @@ def iter_entries(source: BinaryIO) -> Iterator[Entry]:
 
 # ------------------------------------------------------------- matching
 # consonant class of each mora's first kana; vowels, ー and ッ carry none
-_CLASS = {}
-for _cls, _chars in {
+_CLASS = {ch: cls for cls, chars in {
     "k": "カキクケコ", "g": "ガギグゲゴ", "s": "サシスセソ", "z": "ザジズゼゾヂヅ",
     "t": "タチツテト", "d": "ダデド", "n": "ナニヌネノン", "h": "ハヒフヘホ", "b": "バビブベボヴ",
     "p": "パピプペポ", "m": "マミムメモ", "y": "ヤユヨ", "r": "ラリルレロ", "w": "ワヰヱヲ",
-}.items():
-    for _ch in _chars:
-        _CLASS[_ch] = _cls
+}.items() for ch in chars}
 _SMALL = "ァィゥェォャュョヮ"
 
 
