@@ -88,11 +88,32 @@ def test_arpabet_rules(arpabet, kana):
 
 
 # --------------------------------------------------------------- word level
-def test_overrides_win_over_the_dictionary():
+@pytest.mark.parametrize(
+    "word,kana",
+    [
+        # OVERRIDES win over the dictionary
+        ("Claude", "クロード"), ("talk", "トーク"), ("pytest", "パイテスト"),
+        # acronyms and short unknowns are spelled (xq: unknown, too short to guess)
+        ("MCP", "エムシーピー"), ("GPU", "ジーピーユー"), ("xq", "エックスキュー"),
+        # short all-caps words are spelled even when the dictionary knows them
+        ("PR", "ピーアール"), ("IT", "アイティー"),
+        ("OK", "オーケー"),  # overrides still win
+        ("A", "ア"),  # a sentence-initial article is not a letter
+        ("zorblat", "ゾルブラト"),  # an unknown long word uses the romaji fallback
+        # common notification words read as loanwords
+        ("moment", "モーメント"), ("minute", "ミニット"), ("result", "リザルト"), ("query", "クエリー"),
+        ("window", "ウィンドウ"), ("today", "トゥデイ"), ("backtest", "バックテスト"), ("four", "フォー"),
+        ("year", "イヤー"), ("hmm", "フーム"), ("civ", "シブ"), ("language", "ランゲージ"), ("from", "フロム"),
+        ("capital", "キャピタル"),
+    ],
+)
+def test_word_to_kana(word, kana):
+    assert word_to_kana(word) == kana
+
+
+def test_overrides_and_letter_names():
     assert OVERRIDES["claude"] == "クロード"
-    assert word_to_kana("Claude") == "クロード"
-    assert word_to_kana("talk") == "トーク"
-    assert word_to_kana("pytest") == "パイテスト"
+    assert spell_letters("mcp") == "エムシーピー"
 
 
 def test_dictionary_words_go_through_the_rules(no_loanwords):
@@ -100,13 +121,6 @@ def test_dictionary_words_go_through_the_rules(no_loanwords):
     assert word_to_kana("computer") == "カンピューター"
     assert word_to_kana("download") == "ダウンロード"
     assert word_to_kana("GitHub") == "ギットハブ"
-
-
-def test_acronyms_and_short_unknowns_are_spelled():
-    assert spell_letters("mcp") == "エムシーピー"
-    assert word_to_kana("MCP") == "エムシーピー"
-    assert word_to_kana("GPU") == "ジーピーユー"
-    assert word_to_kana("xq") == "エックスキュー"  # unknown, too short to guess
 
 
 @pytest.mark.parametrize(
@@ -124,44 +138,20 @@ def test_romaji_fallback_reads_unknown_words(word, kana):
     assert romaji_to_kana(word) == kana
 
 
-def test_unknown_long_word_uses_romaji_fallback():
-    assert word_to_kana("zorblat") == "ゾルブラト"
-
-
 # ------------------------------------------------------------- whole text
-def test_transliterate_sentence_with_punctuation_and_digits():
-    assert transliterate("All tests passed. 3 files, really?") == "オール テスツ パスト。 3 ファイルズ、 リアリー？"
-
-
-def test_transliterate_leaves_japanese_and_decimals_alone():
-    assert transliterate("テストが passed しました。loss 0.25") == "テストが パスト しました。ロス 0.25"
-
-
-def test_transliterate_project_label_and_hyphens():
-    assert transliterate("Claude Talk") == "クロード トーク"
-    assert transliterate("auto-quant") == "オート クウォント"
-
-
-def test_transliterate_possessive():
-    assert transliterate("Kevin's PC") == "ケビンズ ピーシー"
-
-
-def test_transliterate_text_without_latin_is_unchanged():
-    assert transliterate("ビルド成功。") == "ビルド成功。"
-
-
-def test_common_notification_words_read_as_loanwords():
-    assert word_to_kana("moment") == "モーメント"
-    assert word_to_kana("minute") == "ミニット"
-    assert word_to_kana("result") == "リザルト"
-    assert word_to_kana("query") == "クエリー"
-    assert word_to_kana("window") == "ウィンドウ"
-    assert word_to_kana("today") == "トゥデイ"
-    assert word_to_kana("backtest") == "バックテスト"
-    extra = {"four": "フォー", "year": "イヤー", "hmm": "フーム", "civ": "シブ", "language": "ランゲージ",
-             "from": "フロム", "capital": "キャピタル"}
-    for word, kana in extra.items():
-        assert word_to_kana(word) == kana
+@pytest.mark.parametrize(
+    "text,kana",
+    [
+        ("All tests passed. 3 files, really?", "オール テスツ パスト。 3 ファイルズ、 リアリー？"),
+        ("テストが passed しました。loss 0.25", "テストが パスト しました。ロス 0.25"),  # Japanese, decimals stay
+        ("Claude Talk", "クロード トーク"),  # the project label
+        ("auto-quant", "オート クウォント"),  # hyphens split
+        ("Kevin's PC", "ケビンズ ピーシー"),  # possessive
+        ("ビルド成功。", "ビルド成功。"),  # no Latin: unchanged
+    ],
+)
+def test_transliterate(text, kana):
+    assert transliterate(text) == kana
 
 
 # ------------------------------------------------------ loanword spellings
@@ -171,13 +161,12 @@ def test_rule_kana_is_the_dictionary_reading_or_none():
     assert rule_kana("zorblat") is None
 
 
-def test_loanword_spelling_beats_the_rules(loans):
-    assert word_to_kana("sentence") == "センテンス"
-    assert word_to_kana("Review") == "レビュー"
-
-
-def test_overrides_still_beat_the_loanword_table(loans):
-    assert word_to_kana("claude") == "クロード"
+@pytest.mark.parametrize(
+    "word,kana",
+    [("sentence", "センテンス"), ("Review", "レビュー"), ("claude", "クロード")],  # overrides still beat the table
+)
+def test_loanword_spelling_beats_the_rules(loans, word, kana):
+    assert word_to_kana(word) == kana
 
 
 @pytest.mark.parametrize(

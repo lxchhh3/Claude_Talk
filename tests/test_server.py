@@ -1,26 +1,18 @@
 import re
 
 import pytest
-from mcp.shared.memory import (
-    create_connected_server_and_client_session as client_session,
-)
+from conftest import AVAIL, HARUKA, MARISA, YUKKURI, ZIRA
+from mcp.shared.memory import create_connected_server_and_client_session as client_session
 
-from claude_talk.server import build_server, project_label_from_env, quiet_import
-from claude_talk.speaker import Speaker
-
-from test_speaker import AVAIL, YUKKURI, ZIRA, FakeBackend, FakeLock
+from claude_talk.server import build_server, default_voice_from_env, project_label_from_env, quiet_import
 
 
-@pytest.fixture
-def backend():
-    return FakeBackend()
-
-
-@pytest.fixture
-def speaker(backend):
-    s = Speaker(lambda: backend, lock=FakeLock())
-    yield s
-    s.close(timeout=5)
+async def _call(speaker, args, tool="speak", **server):
+    """Build the server, call one tool over an in-memory MCP session, let the speech finish."""
+    async with client_session(build_server(speaker, **server)._mcp_server) as client:
+        res = await client.call_tool(tool, args)
+    assert speaker.wait_idle(5)
+    return res
 
 
 def _text(result):
@@ -37,6 +29,17 @@ class FakeKana:
     def __call__(self, text):
         self.calls.append(text)
         return re.sub(r"[A-Za-z']+", "カナ", text).replace(".", "。")
+
+
+class FakeNotation:
+    """Stands in for notation.to_notation: pure-ASCII text -> a fixed notation."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, text):
+        self.calls.append(text)
+        return "#>えぬ'。" if text.isascii() else None
 
 
 # ------------------------------------------------------------------ tools
@@ -64,11 +67,8 @@ async def test_tools_exposed(speaker):
 # ------------------------------------------------------- without katakana
 @pytest.mark.anyio
 async def test_speak_prefixes_project_label_and_reports_voice(backend, speaker):
-    server = build_server(speaker, project_label="Claude Talk")
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("speak", {"text": "**tests** passed"})
+    res = await _call(speaker, {"text": "**tests** passed"}, project_label="Claude Talk")
     assert res.isError is False
-    assert speaker.wait_idle(5)
     assert backend.calls == [("Claude Talk. tests passed.", ZIRA, 0, 100)]
     out = _text(res)
     assert "Zira" in out
@@ -77,80 +77,52 @@ async def test_speak_prefixes_project_label_and_reports_voice(backend, speaker):
 
 @pytest.mark.anyio
 async def test_japanese_body_goes_to_yukkuri_while_label_stays_english(backend, speaker):
-    server = build_server(speaker, project_label="Claude Talk")
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("speak", {"text": "テストが終わりました"})
+    res = await _call(speaker, {"text": "テストが終わりました"}, project_label="Claude Talk")
     assert res.isError is False
-    assert speaker.wait_idle(5)
-    assert backend.calls == [
-        ("Claude Talk.", ZIRA, 0, 100),
-        ("テストが終わりました。", YUKKURI, 0, 100),
-    ]
+    assert backend.calls == [("Claude Talk.", ZIRA, 0, 100), ("テストが終わりました。", YUKKURI, 0, 100)]
     assert "Yukkuri" in _text(res)
 
 
 @pytest.mark.anyio
 async def test_speak_can_skip_project_prefix(backend, speaker):
-    server = build_server(speaker, project_label="Claude Talk")
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool(
-            "speak", {"text": "tests passed", "announce_project": False}
-        )
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "tests passed", "announce_project": False}, project_label="Claude Talk")
     assert backend.calls[0][0] == "tests passed."
 
 
 @pytest.mark.anyio
 async def test_speak_without_label_has_no_prefix(backend, speaker):
-    server = build_server(speaker, project_label=None)
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "hi"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "hi"})
     assert backend.calls[0][0] == "hi."
 
 
 @pytest.mark.anyio
 async def test_speak_passes_voice_rate_and_interrupt(backend, speaker):
-    server = build_server(speaker, project_label=None)
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool(
-            "speak", {"text": "hey", "voice": "david", "rate": 3, "interrupt": True}
-        )
+    res = await _call(speaker, {"text": "hey", "voice": "david", "rate": 3, "interrupt": True})
     assert res.isError is False
-    assert speaker.wait_idle(5)
     assert backend.calls[0][1:] == (AVAIL[0], 3, 100)
 
 
 @pytest.mark.anyio
 async def test_speak_empty_text_is_a_tool_error(speaker):
-    server = build_server(speaker, project_label=None)
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("speak", {"text": "   "})
-    assert res.isError is True
+    assert (await _call(speaker, {"text": "   "})).isError is True
 
 
 @pytest.mark.anyio
-async def test_speak_reports_truncation(backend, speaker):
-    server = build_server(speaker, project_label=None, max_chars=40)
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("speak", {"text": "Long sentence here. " * 50})
+async def test_speak_reports_truncation(speaker):
+    res = await _call(speaker, {"text": "Long sentence here. " * 50}, max_chars=40)
     assert "truncated" in _text(res).lower()
 
 
 @pytest.mark.anyio
 async def test_stop_speaking_tool(speaker):
-    server = build_server(speaker, project_label=None)
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("stop_speaking", {})
+    res = await _call(speaker, {}, tool="stop_speaking")
     assert res.isError is False
     assert "0" in _text(res)
 
 
 @pytest.mark.anyio
 async def test_list_voices_tool(speaker):
-    server = build_server(speaker, project_label=None)
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("list_voices", {})
+    res = await _call(speaker, {}, tool="list_voices")
     joined = " ".join(c.text for c in res.content)
     for v in AVAIL:
         assert v in joined
@@ -160,11 +132,8 @@ async def test_list_voices_tool(speaker):
 @pytest.mark.anyio
 async def test_english_is_transliterated_and_whole_utterance_is_yukkuri(backend, speaker):
     kana = FakeKana()
-    server = build_server(speaker, project_label="Claude Talk", kana=kana)
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("speak", {"text": "**All tests** passed."})
+    res = await _call(speaker, {"text": "**All tests** passed."}, project_label="Claude Talk", kana=kana)
     assert res.isError is False
-    assert speaker.wait_idle(5)
     assert kana.calls == ["All tests passed.", "Claude Talk"]  # markdown stripped first
     # label and body share the yukkuri voice, so they merge into one engine call
     assert backend.calls == [("カナ カナ。 カナ カナ カナ。", YUKKURI, 0, 100)]
@@ -175,10 +144,7 @@ async def test_english_is_transliterated_and_whole_utterance_is_yukkuri(backend,
 @pytest.mark.anyio
 async def test_explicit_english_voice_skips_katakana(backend, speaker):
     kana = FakeKana()
-    server = build_server(speaker, project_label="Claude Talk", kana=kana)
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "hello there", "voice": "zira"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "hello there", "voice": "zira"}, project_label="Claude Talk", kana=kana)
     assert kana.calls == []
     assert backend.calls == [("Claude Talk. hello there.", ZIRA, 0, 100)]
 
@@ -186,10 +152,7 @@ async def test_explicit_english_voice_skips_katakana(backend, speaker):
 @pytest.mark.anyio
 async def test_katakana_false_keeps_english_on_zira(backend, speaker):
     kana = FakeKana()
-    server = build_server(speaker, project_label=None, kana=kana)
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "hello again", "katakana": False})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "hello again", "katakana": False}, kana=kana)
     assert kana.calls == []
     assert backend.calls[0][:2] == ("hello again.", ZIRA)
 
@@ -197,10 +160,7 @@ async def test_katakana_false_keeps_english_on_zira(backend, speaker):
 @pytest.mark.anyio
 async def test_japanese_body_with_a_latin_word_is_converted(backend, speaker):
     kana = FakeKana()
-    server = build_server(speaker, project_label=None, kana=kana)
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "テストが passed"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "テストが passed"}, kana=kana)
     assert kana.calls == ["テストが passed。"]
     assert backend.calls[0][:2] == ("テストが カナ。", YUKKURI)
 
@@ -208,43 +168,22 @@ async def test_japanese_body_with_a_latin_word_is_converted(backend, speaker):
 @pytest.mark.anyio
 async def test_pure_japanese_body_only_converts_the_label(backend, speaker):
     kana = FakeKana()
-    server = build_server(speaker, project_label="Claude Talk", kana=kana)
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "ビルド成功"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "ビルド成功"}, project_label="Claude Talk", kana=kana)
     assert kana.calls == ["Claude Talk"]
     assert backend.calls == [("カナ カナ。 ビルド成功。", YUKKURI, 0, 100)]
 
 
 @pytest.mark.anyio
 async def test_label_voice_override_keeps_label_on_that_voice(backend, speaker):
-    kana = FakeKana()
-    server = build_server(speaker, project_label="Claude Talk", kana=kana, label_voice="zira")
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "done"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "done"}, project_label="Claude Talk", kana=FakeKana(), label_voice="zira")
     assert backend.calls == [("カナ カナ。", ZIRA, 0, 100), ("カナ。", YUKKURI, 0, 100)]
 
 
 # ------------------------------------------- accent notation (AquesTalk)
-class FakeNotation:
-    """Stands in for notation.to_notation: pure-ASCII text -> a fixed notation."""
-
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, text):
-        self.calls.append(text)
-        return "#>えぬ'。" if text.isascii() else None
-
-
 @pytest.mark.anyio
 async def test_english_for_an_aquestalk_voice_is_sent_as_notation(backend, speaker):
     notation = FakeNotation()
-    server = build_server(speaker, project_label=None, kana=FakeKana(), notation=notation)
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("speak", {"text": "**All tests** passed."})
-    assert speaker.wait_idle(5)
+    res = await _call(speaker, {"text": "**All tests** passed."}, kana=FakeKana(), notation=notation)
     assert notation.calls == ["All tests passed."]  # the English, not the katakana
     assert backend.calls == [("#>えぬ'。", YUKKURI, 0, 100)]
     out = _text(res)
@@ -254,47 +193,39 @@ async def test_english_for_an_aquestalk_voice_is_sent_as_notation(backend, speak
 
 @pytest.mark.anyio
 async def test_label_is_notation_too_and_merges_with_the_body(backend, speaker):
-    server = build_server(speaker, project_label="Claude Talk", kana=FakeKana(), notation=FakeNotation())
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "done"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "done"}, project_label="Claude Talk", kana=FakeKana(), notation=FakeNotation())
     assert backend.calls == [("#>えぬ'。 #>えぬ'。", YUKKURI, 0, 100)]  # the backend splits the lines
 
 
 @pytest.mark.anyio
 async def test_mixed_japanese_falls_back_to_katakana(backend, speaker):
     notation = FakeNotation()
-    server = build_server(speaker, project_label=None, kana=FakeKana(), notation=notation)
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "テストが passed"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "テストが passed"}, kana=FakeKana(), notation=notation)
     assert notation.calls == ["テストが passed。"]
     assert backend.calls[0][:2] == ("テストが カナ。", YUKKURI)
 
 
 @pytest.mark.anyio
 async def test_windows_japanese_voice_never_gets_notation(backend, speaker):
-    from test_speaker import HARUKA
-
     notation = FakeNotation()
-    server = build_server(speaker, project_label=None, kana=FakeKana(), notation=notation)
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "done", "voice": "haruka"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "done", "voice": "haruka"}, kana=FakeKana(), notation=notation)
     assert notation.calls == []
     assert backend.calls == [("カナ。", HARUKA, 0, 100)]
 
 
 # ------------------------------------------------------- project label
-def test_label_defaults_to_folder_name_with_spaces():
-    assert project_label_from_env({}, "D:/2files/tools/Claude_Talk") == "Claude Talk"
-    assert project_label_from_env({}, "D:\\2files\\fina\\auto-quant\\") == "auto quant"
-
-
-def test_label_env_override_and_off():
-    assert project_label_from_env({"CLAUDE_TALK_PROJECT": "Quant"}, "D:/x") == "Quant"
-    assert project_label_from_env({"CLAUDE_TALK_PROJECT": "off"}, "D:/x") is None
-    assert project_label_from_env({"CLAUDE_TALK_PROJECT": ""}, "D:/x") is None
+@pytest.mark.parametrize(
+    "env,cwd,label",
+    [
+        ({}, "D:/2files/tools/Claude_Talk", "Claude Talk"),  # folder name, separators as spaces
+        ({}, "D:\\2files\\fina\\auto-quant\\", "auto quant"),
+        ({"CLAUDE_TALK_PROJECT": "Quant"}, "D:/x", "Quant"),  # the env var overrides
+        ({"CLAUDE_TALK_PROJECT": "off"}, "D:/x", None),  # or turns it off
+        ({"CLAUDE_TALK_PROJECT": ""}, "D:/x", None),
+    ],
+)
+def test_project_label(env, cwd, label):
+    assert project_label_from_env(env, cwd) == label
 
 
 # ---------------------------------------------------------- quiet import
@@ -316,17 +247,9 @@ def test_quiet_import_returns_none_for_missing_module(capsys):
 
 
 # ---------------------------------------------------------- default voice
-from test_speaker import MARISA  # noqa: E402
-from claude_talk.server import default_voice_from_env  # noqa: E402
-
-
 @pytest.mark.anyio
 async def test_default_voice_applies_to_body_and_label(backend, speaker):
-    kana = FakeKana()
-    server = build_server(speaker, project_label="Claude Talk", kana=kana, default_voice="marisa")
-    async with client_session(server._mcp_server) as client:
-        res = await client.call_tool("speak", {"text": "done"})
-    assert speaker.wait_idle(5)
+    res = await _call(speaker, {"text": "done"}, project_label="Claude Talk", kana=FakeKana(), default_voice="marisa")
     assert backend.calls == [("カナ カナ。 カナ。", MARISA, 0, 100)]
     assert "Marisa" in _text(res)
 
@@ -334,20 +257,14 @@ async def test_default_voice_applies_to_body_and_label(backend, speaker):
 @pytest.mark.anyio
 async def test_default_english_voice_disables_katakana(backend, speaker):
     kana = FakeKana()
-    server = build_server(speaker, project_label="Claude Talk", kana=kana, default_voice="zira")
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "hello there"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "hello there"}, project_label="Claude Talk", kana=kana, default_voice="zira")
     assert kana.calls == []
     assert backend.calls == [("Claude Talk. hello there.", ZIRA, 0, 100)]
 
 
 @pytest.mark.anyio
 async def test_explicit_voice_beats_the_default(backend, speaker):
-    server = build_server(speaker, project_label=None, kana=FakeKana(), default_voice="marisa")
-    async with client_session(server._mcp_server) as client:
-        await client.call_tool("speak", {"text": "done", "voice": "reimu"})
-    assert speaker.wait_idle(5)
+    await _call(speaker, {"text": "done", "voice": "reimu"}, kana=FakeKana(), default_voice="marisa")
     assert backend.calls[0][1] == YUKKURI
 
 

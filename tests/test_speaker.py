@@ -1,89 +1,20 @@
 import threading
 
 import pytest
+from conftest import AVAIL, DAVID, YUKKURI, ZIRA, FakeBackend, FakeLock
 
-from claude_talk.speaker import CompositeBackend, Speaker
-
-AVAIL = [
-    "Microsoft David Desktop - English (United States)",
-    "Microsoft Zira Desktop - English (United States)",
-    "Microsoft Haruka Desktop - Japanese",
-    "Microsoft Huihui Desktop - Chinese (Simplified)",
-    "Mei (Open JTalk)",
-    "Yukkuri Reimu (AquesTalkPlayer れいむ)",
-    "Yukkuri Marisa (AquesTalkPlayer まりさ)",
-]
-DAVID, ZIRA, HARUKA, HUIHUI, MEI, YUKKURI, MARISA = AVAIL
+from claude_talk.speaker import CompositeBackend
 
 
-class FakeBackend:
-    """Records what the worker asks it to say. `gate` lets a test hold an
-    utterance in progress so the queue fills up behind it."""
-
-    def __init__(self, voices=AVAIL, block=False):
-        self._voices = list(voices)
-        self.calls = []
-        self.stopped = 0
-        self.gate = threading.Event()
-        if not block:
-            self.gate.set()
-
-    def voices(self):
-        return list(self._voices)
-
-    def speak(self, text, voice, rate, volume):
-        self.gate.wait(5)
-        self.calls.append((text, voice, rate, volume))
-
-    def stop(self):
-        self.stopped += 1
-
-    def close(self):
-        self.closed_in_thread = threading.current_thread().name
-
-
-class FakeLock:
-    def __init__(self):
-        self.acquired = 0
-        self.released = 0
-        self.held = False
-
-    def acquire(self, timeout):
-        assert not self.held, "lock re-entered while held"
-        self.held = True
-        self.acquired += 1
-        return True
-
-    def release(self):
-        self.held = False
-        self.released += 1
-
-
-@pytest.fixture
-def backend():
-    return FakeBackend()
-
-
-@pytest.fixture
-def speaker(backend):
-    s = Speaker(lambda: backend, lock=FakeLock())
-    yield s
-    s.close(timeout=5)
-
-
-def test_backend_factory_runs_on_the_worker_thread():
+def test_backend_factory_runs_on_the_worker_thread(make_speaker):
     seen = {}
 
     def factory():
         seen["thread"] = threading.current_thread().name
         return FakeBackend()
 
-    s = Speaker(factory, lock=FakeLock())
-    try:
-        assert s.wait_ready(5)
-        assert seen["thread"] != threading.current_thread().name
-    finally:
-        s.close(timeout=5)
+    assert make_speaker(factory).wait_ready(5)
+    assert seen["thread"] != threading.current_thread().name
 
 
 def test_speak_sends_cleaned_text_and_default_voice(backend, speaker):
@@ -134,10 +65,7 @@ def test_japanese_text_selects_yukkuri(backend, speaker):
 def test_prefix_in_another_voice_is_spoken_first_in_the_same_utterance(backend, speaker):
     r = speaker.speak("テスト完了", prefix="Claude Talk", prefix_voice="zira")
     assert speaker.wait_idle(5)
-    assert backend.calls == [
-        ("Claude Talk.", ZIRA, 0, 100),
-        ("テスト完了。", YUKKURI, 0, 100),
-    ]
+    assert backend.calls == [("Claude Talk.", ZIRA, 0, 100), ("テスト完了。", YUKKURI, 0, 100)]
     assert (r.text, r.voice) == ("テスト完了。", YUKKURI)
 
 
@@ -147,16 +75,13 @@ def test_prefix_with_same_voice_is_merged_into_one_call(backend, speaker):
     assert backend.calls == [("Claude Talk. tests passed.", ZIRA, 0, 100)]
 
 
-def test_prefix_and_body_share_one_lock_acquisition(backend):
+def test_prefix_and_body_share_one_lock_acquisition(backend, make_speaker):
     lock = FakeLock()
-    s = Speaker(lambda: backend, lock=lock)
-    try:
-        s.speak("テスト完了", prefix="Claude Talk", prefix_voice="zira")
-        assert s.wait_idle(5)
-        assert len(backend.calls) == 2
-        assert (lock.acquired, lock.released) == (1, 1)
-    finally:
-        s.close(timeout=5)
+    s = make_speaker(lambda: backend, lock)
+    s.speak("テスト完了", prefix="Claude Talk", prefix_voice="zira")
+    assert s.wait_idle(5)
+    assert len(backend.calls) == 2
+    assert (lock.acquired, lock.released) == (1, 1)
 
 
 # ------------------------------------------------------------ composite
@@ -195,8 +120,7 @@ def test_composite_tolerates_a_backend_that_fails_to_start():
 
 
 def test_long_text_is_truncated_and_reported(backend, speaker):
-    long = "First sentence. " * 100
-    r = speaker.speak(long, max_chars=40)
+    r = speaker.speak("First sentence. " * 100, max_chars=40)
     assert speaker.wait_idle(5)
     assert r.truncated is True
     assert len(backend.calls[0][0]) <= 40
@@ -212,73 +136,62 @@ def test_voices_lists_backend_voices(speaker):
     assert speaker.voices() == AVAIL
 
 
-def test_lock_is_taken_once_per_utterance(backend):
+def test_lock_is_taken_once_per_utterance(backend, make_speaker):
     lock = FakeLock()
-    s = Speaker(lambda: backend, lock=lock)
-    try:
-        s.speak("one")
-        s.speak("two")
-        assert s.wait_idle(5)
-        assert (lock.acquired, lock.released) == (2, 2)
-        assert lock.held is False
-    finally:
-        s.close(timeout=5)
+    s = make_speaker(lambda: backend, lock)
+    s.speak("one")
+    s.speak("two")
+    assert s.wait_idle(5)
+    assert (lock.acquired, lock.released) == (2, 2)
+    assert lock.held is False
 
 
-def test_stop_purges_pending_and_interrupts_current():
+def test_stop_purges_pending_and_interrupts_current(make_speaker):
     backend = FakeBackend(block=True)
-    s = Speaker(lambda: backend, lock=FakeLock())
-    try:
-        s.speak("a")
-        s.speak("b")
-        s.speak("c")
-        # give the worker a moment to pick up "a" and block inside speak()
-        assert s.wait_speaking(5)
-        purged = s.stop()
-        assert purged == 2
-        assert backend.stopped == 1
-        backend.gate.set()
-        assert s.wait_idle(5)
-        assert [c[0] for c in backend.calls] == ["a."]
-    finally:
-        s.close(timeout=5)
+    s = make_speaker(lambda: backend)
+    s.speak("a")
+    s.speak("b")
+    s.speak("c")
+    # give the worker a moment to pick up "a" and block inside speak()
+    assert s.wait_speaking(5)
+    assert s.stop() == 2
+    assert backend.stopped == 1
+    backend.gate.set()
+    assert s.wait_idle(5)
+    assert [c[0] for c in backend.calls] == ["a."]
 
 
-def test_interrupt_flag_purges_pending_then_queues_new():
+def test_interrupt_flag_purges_pending_then_queues_new(make_speaker):
     backend = FakeBackend(block=True)
-    s = Speaker(lambda: backend, lock=FakeLock())
-    try:
-        s.speak("a")
-        s.speak("b")
-        assert s.wait_speaking(5)
-        r = s.speak("c", interrupt=True)
-        assert r.purged == 1
-        assert backend.stopped == 1
-        backend.gate.set()
-        assert s.wait_idle(5)
-        assert [c[0] for c in backend.calls] == ["a.", "c."]
-    finally:
-        s.close(timeout=5)
+    s = make_speaker(lambda: backend)
+    s.speak("a")
+    s.speak("b")
+    assert s.wait_speaking(5)
+    assert s.speak("c", interrupt=True).purged == 1
+    assert backend.stopped == 1
+    backend.gate.set()
+    assert s.wait_idle(5)
+    assert [c[0] for c in backend.calls] == ["a.", "c."]
 
 
-def test_close_stops_worker(backend):
-    s = Speaker(lambda: backend, lock=FakeLock())
+def test_close_stops_worker(backend, make_speaker):
+    s = make_speaker(lambda: backend)
     s.speak("bye")
     assert s.wait_idle(5)
     s.close(timeout=5)
     assert not s.is_alive()
 
 
-def test_close_releases_backend_on_the_worker_thread(backend):
+def test_close_releases_backend_on_the_worker_thread(backend, make_speaker):
     # COM objects must be released by the thread that created them, or
     # pywin32 prints "Win32 exception occurred releasing IUnknown" at exit.
-    s = Speaker(lambda: backend, lock=FakeLock())
+    s = make_speaker(lambda: backend)
     assert s.wait_ready(5)
     s.close(timeout=5)
     assert backend.closed_in_thread == "claude-talk-speaker"
 
 
-def test_close_without_backend_close_method_is_fine():
+def test_close_without_backend_close_method_is_fine(make_speaker):
     class Minimal:
         def voices(self):
             return AVAIL
@@ -289,7 +202,7 @@ def test_close_without_backend_close_method_is_fine():
         def stop(self):
             pass
 
-    s = Speaker(Minimal, lock=FakeLock())
+    s = make_speaker(Minimal)
     s.speak("x")
     assert s.wait_idle(5)
     s.close(timeout=5)

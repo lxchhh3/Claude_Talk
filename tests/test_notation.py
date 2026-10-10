@@ -21,34 +21,22 @@ pytest.importorskip("cmudict")
         ("Done, check the log!", "#>だ'ん、ちぇ'っく/ざろ'ぐ。"),
         ("MCP server", "#>えむしーぴ'ー/さ'ーばー。"),
         ("3 files", "#>すり'ー/ふぁ'いるず。"),
+        ("Done. Check the log.", "#>だ'ん。ちぇ'っく/ざろ'ぐ。"),  # two sentences stay in one string
+        ("ModuleNotFoundError", "#>も'じゅーる/の'っと/ふぁ'うんど/え'らー。"),  # CamelCase: a phrase per word
+        ("テスト passed", None),  # anything with Japanese is left to the normal reader
+        ("ビルド成功", None),
+        ("...", None),  # nothing readable
+        ("", None),
     ],
 )
 def test_sentences(text, notation):
     assert to_notation(text) == notation
 
 
-def test_two_sentences_stay_in_one_string():
-    assert to_notation("Done. Check the log.") == "#>だ'ん。ちぇ'っく/ざろ'ぐ。"
-
-
-def test_text_with_japanese_is_left_to_the_normal_reader():
-    assert to_notation("テスト passed") is None
-    assert to_notation("ビルド成功") is None
-
-
-def test_nothing_readable_gives_none():
-    assert to_notation("...") is None
-    assert to_notation("") is None
-
-
 def test_symbols_and_paths_never_leak_into_the_notation():
     n = to_notation("Edited run_server.py (see claude_talk/text.py)")
     assert n is not None and n.startswith("#>") and n.endswith("。")
     assert not set(n) & set("_.()\\ ")
-
-
-def test_camel_case_words_are_separate_phrases():
-    assert to_notation("ModuleNotFoundError") == "#>も'じゅーる/の'っと/ふぁ'うんど/え'らー。"
 
 
 def test_hyphenated_words_are_separate_phrases():
@@ -94,10 +82,12 @@ def test_phonetic_uses_only_syllables_every_engine_accepts(kana, hira):
     assert phonetic(kana) == hira
 
 
-def test_clean_phrase_drops_what_the_player_rejects():
-    assert clean_phrase("ーあ") == "あ"  # no ー at the start of a phrase
-    assert clean_phrase("あっっか") == "あっか"  # no double っ
-    assert clean_phrase("あっーか") == "あっか"  # no ー right after っ
+@pytest.mark.parametrize(
+    "phrase,cleaned",
+    [("ーあ", "あ"), ("あっっか", "あっか"), ("あっーか", "あっか")],  # no leading ー, no っっ, no っー
+)
+def test_clean_phrase_drops_what_the_player_rejects(phrase, cleaned):
+    assert clean_phrase(phrase) == cleaned
 
 
 # ------------------------------------------------------------- helpers
