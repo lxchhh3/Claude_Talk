@@ -7,7 +7,7 @@ from __future__ import annotations
 import collections
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Iterable, Protocol
 
 from .text import DEFAULT_MAX_CHARS, clean_text, pick_voice, truncate
@@ -56,26 +56,13 @@ class _Part:
     volume: int
 
 
-@dataclass
-class _Utterance:
-    parts: list[_Part] = field(default_factory=list)
-
-    @property
-    def text(self) -> str:
-        return " ".join(p.text for p in self.parts)
-
-
 def _merge(parts: list[_Part]) -> list[_Part]:
     """Join adjacent parts that share voice/rate/volume into one engine call,
     so an English label and an English body are spoken as one sentence."""
     merged: list[_Part] = []
     for p in parts:
-        if merged and (merged[-1].voice, merged[-1].rate, merged[-1].volume) == (
-            p.voice,
-            p.rate,
-            p.volume,
-        ):
-            merged[-1].text = f"{merged[-1].text} {p.text}"
+        if merged and (merged[-1].voice, merged[-1].rate, merged[-1].volume) == (p.voice, p.rate, p.volume):
+            merged[-1].text += " " + p.text
         else:
             merged.append(_Part(p.text, p.voice, p.rate, p.volume))
     return merged
@@ -144,7 +131,7 @@ class Speaker:
         self._init_error: BaseException | None = None
         self._ready = threading.Event()
         self._cond = threading.Condition()
-        self._queue: collections.deque[_Utterance] = collections.deque()
+        self._queue: collections.deque[list[_Part]] = collections.deque()  # one utterance each
         self._speaking = False
         self._abort = False
         self._closing = False
@@ -177,7 +164,7 @@ class Speaker:
                 try:
                     self._say(utt)
                 except Exception:  # noqa: BLE001 - one bad utterance must not kill the worker
-                    log.exception("utterance failed: %r", utt.text[:80])
+                    log.exception("utterance failed: %r", " ".join(p.text for p in utt)[:80])
                 finally:
                     with self._cond:
                         self._speaking = False
@@ -191,13 +178,13 @@ class Speaker:
                 except Exception:  # noqa: BLE001
                     log.exception("backend close failed")
 
-    def _say(self, utt: _Utterance) -> None:
+    def _say(self, utt: list[_Part]) -> None:
         assert self._backend is not None
         got = self._lock.acquire(self._lock_timeout)
         if not got:
             log.warning("speech lock busy for %.0fs; speaking anyway", self._lock_timeout)
         try:
-            for part in utt.parts:
+            for part in utt:
                 if self._abort:
                     break
                 self._backend.speak(part.text, part.voice, part.rate, part.volume)
@@ -247,7 +234,7 @@ class Speaker:
                 label_voice = pick_voice(label, self._voices, preferred=prefix_voice)
                 parts.append(_Part(label, label_voice, rate, volume))
         parts.append(_Part(cleaned, chosen, rate, volume))
-        utt = _Utterance(_merge(parts))
+        utt = _merge(parts)
         purged = self.stop() if interrupt else 0
         with self._cond:
             self._queue.append(utt)
